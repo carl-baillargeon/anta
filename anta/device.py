@@ -17,7 +17,7 @@ import httpcore
 from aiocache import Cache
 from aiocache.plugins import HitMissRatioPlugin
 from asyncssh import SSHClientConnection, SSHClientConnectionOptions
-from httpx import ConnectError, HTTPError, TimeoutException
+from httpx import ConnectError, HTTPError, Limits, TimeoutException
 
 from anta import __DEBUG__
 from anta.logger import anta_log_exception, exc_to_str
@@ -276,7 +276,7 @@ class AsyncEOSDevice(AntaDevice):
         self.enable = enable
         self._enable_password = enable_password
         self.global_timeout = timeout
-        self._session: asynceapi.Device = asynceapi.Device(host=host, port=port, username=username, password=password, proto=proto, timeout=timeout)
+        self._session: asynceapi.Device = asynceapi.Device(host=host, port=port, username=username, password=password, proto=proto, timeout=timeout, limits=Limits(max_connections=7, max_keepalive_connections=3))
         ssh_params: dict[str, Any] = {}
         if insecure:
             ssh_params["known_hosts"] = None
