@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Literal
 
+import asynceapi
 import asyncssh
 import httpcore
 from aiocache import Cache
@@ -18,7 +19,6 @@ from aiocache.plugins import HitMissRatioPlugin
 from asyncssh import SSHClientConnection, SSHClientConnectionOptions
 from httpx import ConnectError, HTTPError, TimeoutException
 
-import asynceapi
 from anta import __DEBUG__
 from anta.logger import anta_log_exception, exc_to_str
 from anta.models import AntaCommand
@@ -115,6 +115,10 @@ class AntaDevice(ABC):
         yield "is_online", self.is_online
         yield "established", self.established
         yield "disable_cache", self.cache is None
+
+    @abstractmethod
+    def serialize(self) -> dict[str, Any]:
+        """Serialize an AntaDevice instance."""
 
     @abstractmethod
     async def _collect(self, command: AntaCommand, *, collection_id: str | None = None) -> None:
@@ -271,6 +275,7 @@ class AsyncEOSDevice(AntaDevice):
             raise ValueError(message)
         self.enable = enable
         self._enable_password = enable_password
+        self.global_timeout = timeout
         self._session: asynceapi.Device = asynceapi.Device(host=host, port=port, username=username, password=password, proto=proto, timeout=timeout)
         ssh_params: dict[str, Any] = {}
         if insecure:
@@ -297,6 +302,26 @@ class AsyncEOSDevice(AntaDevice):
             _ssh_opts["kwargs"]["password"] = removed_pw
             yield ("_session", vars(self._session))
             yield ("_ssh_opts", _ssh_opts)
+
+    def serialize(self) -> dict[str, Any]:
+        """Serialize an AsyncEOSDevice instance."""
+        return {
+            "name": self.name,
+            "hw_model": self.hw_model,
+            "tags": list(self.tags),
+            "is_online": self.is_online,
+            "established": self.established,
+            "host": self._session.host,
+            "username": self._ssh_opts.username,
+            "password": self._ssh_opts.password,
+            "enable": self.enable,
+            "enable_password": self._enable_password,
+            "port": self._session.port,
+            "ssh_port": self._ssh_opts.port,
+            "timeout": self.global_timeout,
+            "insecure": self._ssh_opts.known_hosts is None,
+            "disable_cache": self.cache is None,
+        }
 
     @property
     def _keys(self) -> tuple[Any, ...]:
