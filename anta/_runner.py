@@ -18,7 +18,7 @@ from anta.cli.console import console
 from anta.device import AntaDevice
 from anta.inventory import AntaInventory
 from anta.logger import anta_log_exception
-from anta.models import AntaTest
+from anta.models import AntaCommandDispatcher, AntaTest
 from anta.result_manager import ResultManager
 from anta.settings import AntaRunnerSettings
 from anta.tools import Catchtime, limit_concurrency
@@ -171,6 +171,9 @@ class AntaRunner(BaseModel):
     # Internal settings loaded from environment variables
     _settings: AntaRunnerSettings = PrivateAttr(default_factory=AntaRunnerSettings)
 
+    # Command dispatcher for batching commands
+    _command_dispatcher: AntaCommandDispatcher | None = PrivateAttr(default=None)
+
     def reset(self) -> None:
         """Reset the internal attributes of the ANTA runner."""
         self._selected_inventory: AntaInventory | None = None
@@ -201,6 +204,14 @@ class AntaRunner(BaseModel):
             return manager
 
         with Catchtime(logger=logger, message="Preparing ANTA NRFU Run"):
+            # Initialize command dispatcher if enabled
+            if self._settings.command_dispatcher:
+                self._command_dispatcher = AntaCommandDispatcher(max_batch_size=self._settings.command_dispatcher_batch_size)
+                logger.info(
+                    "Command dispatcher enabled with batch_timeout=%s, max_batch_size=%s",
+                    self._command_dispatcher.batch_timeout,
+                    self._command_dispatcher.max_batch_size,
+                )
             # Set up inventory
             if not await self._setup_inventory(filters, dry_run=dry_run):
                 return manager
@@ -228,6 +239,12 @@ class AntaRunner(BaseModel):
         with Catchtime(logger=logger, message="Running Tests"):
             async for result in limit_concurrency(test_generator, limit=self._settings.max_concurrency):
                 manager.add(await result)
+
+        # Shutdown the command dispatcher and return the manager, no need to log cache statistics
+        if self._command_dispatcher is not None:
+            await self._command_dispatcher.shutdown()
+            self._command_dispatcher = None
+            return manager
 
         self._log_cache_statistics()
         return manager
@@ -390,7 +407,7 @@ class AntaRunner(BaseModel):
     ) -> Coroutine[Any, Any, TestResult] | None:
         """Create a test coroutine from a test definition."""
         try:
-            test_instance = test_def.test(device=device, inputs=test_def.inputs)
+            test_instance = test_def.test(device=device, inputs=test_def.inputs, command_dispatcher=self._command_dispatcher)
             if manager is not None:
                 manager.add(test_instance.result)
             coroutine = test_instance.test()
@@ -454,6 +471,10 @@ class AntaRunner(BaseModel):
                 self._potential_connections,
                 self._settings.file_descriptor_limit,
             )
+
+        # Log warning for command dispatcher
+        if self._command_dispatcher is not None:
+            logger.warning("Command dispatcher is enabled. This feature is in preview and may not be stable. Please consult the ANTA FAQ.")
 
     def _log_cache_statistics(self) -> None:
         """Log cache statistics for each device in the inventory."""

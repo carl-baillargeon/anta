@@ -21,7 +21,7 @@ from httpx import ConnectError, HTTPError, TimeoutException
 import asynceapi
 from anta import __DEBUG__
 from anta.logger import anta_log_exception, exc_to_str
-from anta.models import AntaCommand
+from anta.models import AntaCommand, AntaCommandBatch, CommandNotExecutedError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -276,6 +276,29 @@ class AntaDevice(ABC):
         """
         await asyncio.gather(*(self.collect(command=command, collection_id=collection_id) for command in commands))
 
+    async def collect_batch(self, batch: AntaCommandBatch) -> list[dict[str, Any] | str]:
+        """Collect multiple commands in a batch.
+
+        It is not mandatory to implement this for a valid AntaDevice subclass.
+
+        Parameters
+        ----------
+        batch
+            The batch of commands to collect.
+        command_format
+            The format of the commands in the batch.
+        collection_id
+            An identifier used to build the eAPI request ID.
+
+        Returns
+        -------
+        list
+            List of command outputs.
+        """
+        _ = batch
+        msg = f"collect_batch() method has not been implemented in {self.__class__.__name__} definition"
+        raise NotImplementedError(msg)
+
     @abstractmethod
     async def refresh(self) -> None:
         """Update attributes of an AntaDevice instance.
@@ -512,53 +535,167 @@ class AsyncEOSDevice(AntaDevice):
                     version=command.version,
                     req_id=f"ANTA-{collection_id}-{id(command)}" if collection_id else f"ANTA-{id(command)}",
                 )  # type: ignore[assignment] # multiple commands returns a list
+            except asynceapi.EapiCommandError as e:
+                # This block catches exceptions related to EOS issuing an error
+                self._handle_eapi_command_error(e, command)
+            except TimeoutException as e:
+                # This block catches HTTPX timeout exceptions
+                self._handle_timeout_exception(e, command)
+            except (ConnectError, OSError) as e:
+                # This block catches OSError and socket issues related exceptions
+                self._handle_network_exception(e, command)
+            except HTTPError as e:
+                # This block catches most of the HTTPX exceptions and logs a general message
+                command.errors = [exc_to_str(e)]
+                self._handle_http_error(e, command)
+            else:
                 # Do not keep response of 'enable' command
                 command.output = response[-1]
-            except asynceapi.EapiCommandError as e:
-                # This block catches exceptions related to EOS issuing an error.
-                self._log_eapi_command_error(command, e)
-            except TimeoutException as e:
-                # This block catches Timeout exceptions.
-                command.errors = [exc_to_str(e)]
-                timeouts = self._session.timeout.as_dict()
-                logger.error(
-                    "%s occurred while sending a command to %s. Consider increasing the timeout.\nCurrent timeouts: Connect: %s | Read: %s | Write: %s | Pool: %s",
-                    exc_to_str(e),
-                    self.name,
-                    timeouts["connect"],
-                    timeouts["read"],
-                    timeouts["write"],
-                    timeouts["pool"],
-                )
-            except (ConnectError, OSError) as e:
-                # This block catches OSError and socket issues related exceptions.
-                command.errors = [exc_to_str(e)]
-                # pylint: disable=no-member
-                if (isinstance(exc := e.__cause__, httpcore.ConnectError) and isinstance(os_error := exc.__context__, OSError)) or isinstance(
-                    os_error := e, OSError
-                ):
-                    if isinstance(os_error.__cause__, OSError):
-                        os_error = os_error.__cause__
-                    logger.error("A local OS error occurred while connecting to %s: %s.", self.name, os_error)
-                else:
-                    anta_log_exception(e, f"An error occurred while issuing an eAPI request to {self.name}", logger)
-            except HTTPError as e:
-                # This block catches most of the httpx Exceptions and logs a general message.
-                command.errors = [exc_to_str(e)]
-                anta_log_exception(e, f"An error occurred while issuing an eAPI request to {self.name}", logger)
-            logger.debug("%s: %s", self.name, command)
+                logger.debug("%s: %s", self.name, command)
 
-    def _log_eapi_command_error(self, command: AntaCommand, e: asynceapi.EapiCommandError) -> None:
-        """Appropriately log the eapi command error."""
-        command.errors = e.errors
-        if command.requires_privileges:
-            logger.error("Command '%s' requires privileged mode on %s. Verify user permissions and if the `enable` option is required.", command.command, self.name)
-        if not command.supported:
-            logger.debug("Command '%s' is not supported on '%s' (%s)", command.command, self.name, self.hw_model)
-        elif command.returned_known_eos_error:
-            logger.debug("Command '%s' returned a known error '%s': %s", command.command, self.name, command.errors)
+    # TODO: Consider using `stopOnError: false` to simplify EapiCommandError handling
+    async def collect_batch(self, batch: AntaCommandBatch) -> None:  # noqa: C901
+        """Collect multiple commands in a batch."""
+        async with self._command_semaphore:
+            commands: list[dict[str, str | int]] = []
+
+            # Add 'enable' command if required
+            if self.enable and self._enable_password is not None:
+                commands.append({"cmd": "enable", "input": str(self._enable_password)})
+            elif self.enable:
+                # No password
+                commands.append({"cmd": "enable"})
+
+            # Add the commands from the batch
+            commands.extend([{"cmd": req.command, "revision": req.revision} if req.revision else {"cmd": req.command} for req in batch.requests])
+
+            try:
+                response = await self._session.cli(
+                    commands=commands,
+                    ofmt=batch.ofmt,
+                    req_id=batch.req_id,
+                )
+                # Do not keep response of 'enable' command
+                if self.enable:
+                    response = response[1:]
+
+            except asynceapi.EapiCommandError as e:
+                for req in batch.requests:
+                    if not req.future.done():
+                        req.future.set_exception(e)
+            except TimeoutException as e:
+                self._handle_timeout_exception(e, batch=batch)
+            except (ConnectError, OSError) as e:
+                self._handle_network_exception(e, batch=batch)
+            except HTTPError as e:
+                self._handle_http_error(e, batch=batch)
+            else:
+                logger.debug("Distributing responses from batch %s", batch.req_id)
+                for req, output in zip(batch.requests, response, strict=True):
+                    if not req.future.done():
+                        req.future.set_result(output)
+
+    # TODO: Simplify this method
+    def _handle_eapi_command_error(self, e: asynceapi.EapiCommandError, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:  # noqa: C901
+        """Handle EapiCommandError exception."""
+        if command is not None and batch is not None:
+            msg = "Both command and batch provided to _handle_eapi_command_error, only one should be provided"
+            raise ValueError(msg)
+
+        if batch:
+            # Create a mapping from command string to request
+            cmd_to_req = {req.command: req for req in batch.requests}
+
+            # Handle successful commands
+            offset = 1 if self.enable else 0
+            passed_cmd_results = e.passed[offset:]
+            for i, result in enumerate(passed_cmd_results):
+                if i < len(batch.requests):
+                    req = batch.requests[i]
+                    if not req.future.done():
+                        req.future.set_result(result)
+
+            # Set the exception for the failed command
+            if (failed_req := cmd_to_req.get(e.failed)) and not failed_req.future.done():
+                failed_req.future.set_exception(e)
+
+            # Handle non-executed commands
+            for cmd_dict in e.not_exec:
+                cmd = cmd_dict["cmd"]
+                if (req := cmd_to_req.get(cmd)) and not req.future.done():
+                    not_exec_error = CommandNotExecutedError(
+                        command=cmd,
+                        failed_command=e.failed,
+                        error_message=e.errmsg,
+                        device_name=self.name,
+                    )
+                    req.future.set_exception(not_exec_error)
+
+            # Create a command for logging purposes (intentionally overwriting parameter)
+            command = AntaCommand(command=e.failed)
+
+        # Log the command (either provided or created from batch)
+        if command:
+            command.errors = e.errors
+            if command.requires_privileges:
+                msg = f"Command '{command.command}' requires privileged mode on {self.name}. Verify user permissions and if the `enable` option is required."
+                logger.error(msg)
+            if not command.supported:
+                msg = f"Command '{command.command}' is not supported on {self.name} ({self.hw_model})"
+                logger.debug(msg)
+            elif command.returned_known_eos_error:
+                msg = f"Command '{command.command}' returned a known error '{self.name}': {command.errors}"
+                logger.debug(msg)
+
+    def _handle_timeout_exception(self, e: TimeoutException, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:
+        """Handle HTTPX TimeoutException exception."""
+        timeouts = self._session.timeout.as_dict()
+        logger.error(
+            "%s occurred while sending a command to %s. Consider increasing the timeout.\nCurrent timeouts: Connect: %s | Read: %s | Write: %s | Pool: %s",
+            exc_to_str(e),
+            self.name,
+            timeouts["connect"],
+            timeouts["read"],
+            timeouts["write"],
+            timeouts["pool"],
+        )
+
+        # Set the exception on the command or batch
+        if command:
+            command.errors = [exc_to_str(e)]
+        if batch:
+            for req in batch.requests:
+                if not req.future.done():
+                    req.future.set_exception(e)
+
+    def _handle_network_exception(self, e: ConnectError | OSError, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:
+        """Handle HTTPX ConnectError and OSError exception."""
+        if (isinstance(exc := e.__cause__, httpcore.ConnectError) and isinstance(os_error := exc.__context__, OSError)) or isinstance(os_error := e, OSError):
+            if isinstance(os_error.__cause__, OSError):
+                os_error = os_error.__cause__
+            logger.error("A local OS error occurred while connecting to %s: %s.", self.name, os_error)
         else:
-            logger.error("Command '%s' failed on %s: %s", command.command, self.name, e.errors[0] if len(e.errors) == 1 else e.errors)
+            anta_log_exception(e, f"An error occurred while issuing an eAPI request to {self.name}", logger)
+
+        # Set the exception on the command or batch
+        if command:
+            command.errors = [exc_to_str(e)]
+        if batch:
+            for req in batch.requests:
+                if not req.future.done():
+                    req.future.set_exception(e)
+
+    def _handle_http_error(self, e: HTTPError, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:
+        """Handle HTTPX HTTPError exception."""
+        anta_log_exception(e, f"An error occurred while issuing an eAPI request to {self.name}", logger)
+
+        # Set the exception on the command or batch
+        if command:
+            command.errors = [exc_to_str(e)]
+        if batch:
+            for req in batch.requests:
+                if not req.future.done():
+                    req.future.set_exception(e)
 
     async def refresh(self) -> None:
         """Update attributes of an AsyncEOSDevice instance.
@@ -580,7 +717,7 @@ class AsyncEOSDevice(AntaDevice):
                 if self.hw_model is None:
                     logger.critical("Cannot parse 'show version' returned by device %s", self.name)
                 # in some cases it is possible that 'modelName' comes back empty
-                # and it is nice to get a meaninfule error message
+                # and it is nice to get a meaningful error message
                 elif self.hw_model == "":
                     logger.critical("Got an empty 'modelName' in the 'show version' returned by device %s", self.name)
         else:

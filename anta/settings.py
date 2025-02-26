@@ -28,6 +28,12 @@ DEFAULT_SCHEDULING_STRATEGY = "round-robin"
 # Default value for the number of tests to schedule per device when using the DEVICE_BY_COUNT scheduling strategy
 DEFAULT_SCHEDULING_TESTS_PER_DEVICE = 100
 
+# Default value to enable/disable the command dispatcher
+DEFAULT_COMMAND_DISPATCHER = False
+
+# Default value for the batch size of the command dispatcher
+DEFAULT_COMMAND_DISPATCHER_BATCH_SIZE = 50
+
 
 class AntaRunnerSchedulingStrategy(str, Enum):
     """Enum for the test scheduling strategies available in the ANTA runner.
@@ -89,6 +95,8 @@ class AntaRunnerSettings(BaseSettings):
     max_concurrency: PositiveInt = Field(default=DEFAULT_MAX_CONCURRENCY)
     scheduling_strategy: AntaRunnerSchedulingStrategy = Field(default=AntaRunnerSchedulingStrategy(DEFAULT_SCHEDULING_STRATEGY))
     scheduling_tests_per_device: PositiveInt = Field(default=DEFAULT_SCHEDULING_TESTS_PER_DEVICE)
+    command_dispatcher: bool = Field(default=DEFAULT_COMMAND_DISPATCHER)
+    command_dispatcher_batch_size: PositiveInt = Field(default=DEFAULT_COMMAND_DISPATCHER_BATCH_SIZE)
 
     # Computed in post-init
     _file_descriptor_limit: PositiveInt
