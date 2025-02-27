@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+from enum import Enum
 from typing import Any, Literal
 
 if sys.version_info >= (3, 11):
@@ -28,6 +29,18 @@ class EapiComplexCommand(TypedDict):
     input: NotRequired[str]
     revision: NotRequired[int]
 
+class EapiCommandFormat(str, Enum):
+    """Command output format Enum for an eAPI request.
+
+    NOTE: This could be updated to StrEnum when Python 3.11 is the minimum supported version in ANTA.
+    """
+
+    JSON = "json"
+    TEXT = "text"
+
+    def __str__(self) -> str:
+        """Override the __str__ method to return the value of the Enum, mimicking the behavior of StrEnum."""
+        return self.value
 
 class JsonRpc(TypedDict):
     """Type definition of a JSON-RPC payload."""
@@ -43,7 +56,7 @@ class JsonRpcParams(TypedDict):
 
     version: NotRequired[int | Literal["latest"]]
     cmds: list[EapiSimpleCommand | EapiComplexCommand]
-    format: NotRequired[Literal["json", "text"]]
+    format: NotRequired[EapiCommandFormat]
     autoComplete: NotRequired[bool]
     expandAliases: NotRequired[bool]
     timestamps: NotRequired[bool]

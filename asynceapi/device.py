@@ -20,9 +20,10 @@ import httpx
 # -----------------------------------------------------------------------------
 # Private Imports
 # -----------------------------------------------------------------------------
+from ._types import EapiCommandFormat
 from .aio_portcheck import port_check_url
 from .config_session import SessionConfig
-from .errors import EapiCommandError
+from .errors import EapiCommandError, EapiCommandsError
 
 if TYPE_CHECKING:
     from ._types import EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput, JsonRpc
@@ -134,6 +135,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiJsonOutput: ...
 
@@ -150,6 +152,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiJsonOutput]: ...
 
@@ -166,6 +169,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiTextOutput: ...
 
@@ -182,6 +186,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiTextOutput]: ...
 
@@ -198,6 +203,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiJsonOutput | None: ...
 
@@ -214,6 +220,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiJsonOutput] | None: ...
 
@@ -230,6 +237,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiTextOutput | None: ...
 
@@ -246,6 +254,7 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiTextOutput] | None: ...
 
@@ -254,13 +263,14 @@ class Device(httpx.AsyncClient):
         self,
         command: EapiSimpleCommand | EapiComplexCommand | None = None,
         commands: list[EapiSimpleCommand | EapiComplexCommand] | None = None,
-        ofmt: Literal["json", "text"] = "json",
+        ofmt: EapiCommandFormat = EapiCommandFormat.JSON,
         version: int | Literal["latest"] = "latest",
         *,
         suppress_error: bool = False,
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiJsonOutput | EapiTextOutput | list[EapiJsonOutput] | list[EapiTextOutput] | None:
         """Execute one or more CLI commands.
@@ -337,6 +347,7 @@ class Device(httpx.AsyncClient):
             auto_complete=auto_complete,
             expand_aliases=expand_aliases,
             timestamps=timestamps,
+            stop_on_error=stop_on_error,
             req_id=req_id,
         )
 
@@ -351,12 +362,13 @@ class Device(httpx.AsyncClient):
     def _jsonrpc_command(
         self,
         commands: list[EapiSimpleCommand | EapiComplexCommand],
-        ofmt: Literal["json", "text"] = "json",
+        ofmt: EapiCommandFormat = EapiCommandFormat.JSON,
         version: int | Literal["latest"] = "latest",
         *,
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
+        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> JsonRpc:
         """Create the JSON-RPC command dictionary object.
@@ -408,6 +420,7 @@ class Device(httpx.AsyncClient):
                 "autoComplete": auto_complete,
                 "expandAliases": expand_aliases,
                 "timestamps": timestamps,
+                "stopOnError": stop_on_error,
             },
             "id": req_id or id(self),
         }
@@ -460,6 +473,8 @@ class Device(httpx.AsyncClient):
         # will be empty. The last object in the data array will always
         # correspond to the failed command. The command failure details are
         # always stored in the errors array.
+        if jsonrpc["params"]["stopOnError"] is False:
+            raise EapiCommandsError(response=body, commands=commands, ofmt=ofmt)
 
         cmd_data = err_data["data"]
         len_data = len(cmd_data)

@@ -10,8 +10,9 @@ import logging
 from abc import ABC, abstractmethod
 from collections import OrderedDict, defaultdict
 from operator import attrgetter
-from time import monotonic
+from time import monotonic, time
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
 import asyncssh
 import httpcore
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from asynceapi._types import EapiComplexCommand, EapiSimpleCommand
+    from asynceapi._types import EapiCommandFormat, EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput
 
 logger = logging.getLogger(__name__)
 
@@ -542,118 +543,71 @@ class AsyncEOSDevice(AntaDevice):
                 self._handle_eapi_command_error(e, command)
             except TimeoutException as e:
                 # This block catches HTTPX timeout exceptions
-                self._handle_timeout_exception(e, command)
+                command.errors = [exc_to_str(e)]
+                self._log_timeout_exception(e)
             except (ConnectError, OSError) as e:
                 # This block catches OSError and socket issues related exceptions
                 self._handle_network_exception(e, command)
             except HTTPError as e:
                 # This block catches most of the HTTPX exceptions and logs a general message
-                command.errors = [exc_to_str(e)]
                 self._handle_http_error(e, command)
             else:
                 # Do not keep response of 'enable' command
                 command.output = response[-1]
                 logger.debug("%s: %s", self.name, command)
 
-    # TODO: Consider using `stopOnError: false` to simplify EapiCommandError handling
-    async def collect_batch(self, batch: AntaCommandBatch) -> None:  # noqa: C901
+
+    async def collect_batch(
+            self,
+            commands: list[EapiSimpleCommand | EapiComplexCommand],
+            ofmt: EapiCommandFormat,
+            req_id: str | None = None
+    ) -> list[EapiTextOutput | EapiJsonOutput]:
         """Collect multiple commands in a batch."""
         async with self._command_semaphore:
-            commands: list[dict[str, str | int]] = []
-
             # Add 'enable' command if required
             if self.enable and self._enable_password is not None:
-                commands.append({"cmd": "enable", "input": str(self._enable_password)})
+                commands.insert(0, {"cmd": "enable", "input": str(self._enable_password)})
             elif self.enable:
                 # No password
-                commands.append({"cmd": "enable"})
-
-            # Add the commands from the batch
-            commands.extend([{"cmd": req.command, "revision": req.revision} if req.revision else {"cmd": req.command} for req in batch.requests])
-
+                commands.insert(0, {"cmd": "enable"})
             try:
-                response = await self._session.cli(
-                    commands=commands,
-                    ofmt=batch.ofmt,
-                    req_id=batch.req_id,
-                )
+                response = await self._session.cli(commands=commands, ofmt=ofmt, stop_on_error=False, req_id=req_id or f"ANTA-BATCH-{int(time())}-{uuid4().hex[:8]}")
+            except TimeoutException as e:
+                # This block catches HTTPX timeout exceptions
+                self._log_timeout_exception(e)
+                raise
+            except (ConnectError, OSError) as e:
+                # This block catches OSError and socket issues related exceptions
+                self._log_network_exception(e)
+                raise
+            except HTTPError as e:
+                # This block catches most of the HTTPX exceptions
+                self._log_http_error(e)
+                raise
+            else:
                 # Do not keep response of 'enable' command
                 if self.enable:
                     response = response[1:]
+                return response
 
-            except asynceapi.EapiCommandError as e:
-                for req in batch.requests:
-                    if not req.future.done():
-                        req.future.set_exception(e)
-            except TimeoutException as e:
-                self._handle_timeout_exception(e, batch=batch)
-            except (ConnectError, OSError) as e:
-                self._handle_network_exception(e, batch=batch)
-            except HTTPError as e:
-                self._handle_http_error(e, batch=batch)
-            else:
-                logger.debug("Distributing responses from batch %s", batch.req_id)
-                for req, output in zip(batch.requests, response, strict=True):
-                    if not req.future.done():
-                        req.future.set_result(output)
+    def _handle_eapi_command_error(self, e: asynceapi.EapiCommandError, command: AntaCommand) -> None:
+        """Handle the eAPI command errors."""
+        command.errors = e.errors
+        if command.requires_privileges:
+            logger.error("Command '%s' requires privileged mode on %s. Verify user permissions and if the `enable` option is required.", command.command, self.name)
+        if not command.supported:
+            logger.debug("Command '%s' is not supported on '%s' (%s)", command.command, self.name, self.hw_model)
+        elif command.returned_known_eos_error:
+            logger.debug("Command '%s' returned a known error '%s': %s", command.command, self.name, command.errors)
+        else:
+            logger.error("Command '%s' failed on %s: %s", command.command, self.name, command.errors[0] if len(command.errors) == 1 else command.errors)
 
-    # TODO: Simplify this method
-    def _handle_eapi_command_error(self, e: asynceapi.EapiCommandError, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:  # noqa: C901
-        """Handle EapiCommandError exception."""
-        if command is not None and batch is not None:
-            msg = "Both command and batch provided to _handle_eapi_command_error, only one should be provided"
-            raise ValueError(msg)
-
-        if batch:
-            # Create a mapping from command string to request
-            cmd_to_req = {req.command: req for req in batch.requests}
-
-            # Handle successful commands
-            offset = 1 if self.enable else 0
-            passed_cmd_results = e.passed[offset:]
-            for i, result in enumerate(passed_cmd_results):
-                if i < len(batch.requests):
-                    req = batch.requests[i]
-                    if not req.future.done():
-                        req.future.set_result(result)
-
-            # Set the exception for the failed command
-            if (failed_req := cmd_to_req.get(e.failed)) and not failed_req.future.done():
-                failed_req.future.set_exception(e)
-
-            # Handle non-executed commands
-            for cmd_dict in e.not_exec:
-                cmd = cmd_dict["cmd"]
-                if (req := cmd_to_req.get(cmd)) and not req.future.done():
-                    not_exec_error = CommandNotExecutedError(
-                        command=cmd,
-                        failed_command=e.failed,
-                        error_message=e.errmsg,
-                        device_name=self.name,
-                    )
-                    req.future.set_exception(not_exec_error)
-
-            # Create a command for logging purposes (intentionally overwriting parameter)
-            command = AntaCommand(command=e.failed)
-
-        # Log the command (either provided or created from batch)
-        if command:
-            command.errors = e.errors
-            if command.requires_privileges:
-                msg = f"Command '{command.command}' requires privileged mode on {self.name}. Verify user permissions and if the `enable` option is required."
-                logger.error(msg)
-            if not command.supported:
-                msg = f"Command '{command.command}' is not supported on {self.name} ({self.hw_model})"
-                logger.debug(msg)
-            elif command.returned_known_eos_error:
-                msg = f"Command '{command.command}' returned a known error '{self.name}': {command.errors}"
-                logger.debug(msg)
-
-    def _handle_timeout_exception(self, e: TimeoutException, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:
+    def _log_timeout_exception(self, e: TimeoutException) -> None:
         """Handle HTTPX TimeoutException exception."""
         timeouts = self._session.timeout.as_dict()
         logger.error(
-            "%s occurred while sending a command to %s. Consider increasing the timeout.\nCurrent timeouts: Connect: %s | Read: %s | Write: %s | Pool: %s",
+            "%s occurred while sending a request to %s. Consider increasing the timeout.\nCurrent timeouts: Connect: %s | Read: %s | Write: %s | Pool: %s",
             exc_to_str(e),
             self.name,
             timeouts["connect"],
@@ -662,15 +616,7 @@ class AsyncEOSDevice(AntaDevice):
             timeouts["pool"],
         )
 
-        # Set the exception on the command or batch
-        if command:
-            command.errors = [exc_to_str(e)]
-        if batch:
-            for req in batch.requests:
-                if not req.future.done():
-                    req.future.set_exception(e)
-
-    def _handle_network_exception(self, e: ConnectError | OSError, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:
+    def _log_network_exception(self, e: ConnectError | OSError) -> None:
         """Handle HTTPX ConnectError and OSError exception."""
         if (isinstance(exc := e.__cause__, httpcore.ConnectError) and isinstance(os_error := exc.__context__, OSError)) or isinstance(os_error := e, OSError):
             if isinstance(os_error.__cause__, OSError):
@@ -679,25 +625,9 @@ class AsyncEOSDevice(AntaDevice):
         else:
             anta_log_exception(e, f"An error occurred while issuing an eAPI request to {self.name}", logger)
 
-        # Set the exception on the command or batch
-        if command:
-            command.errors = [exc_to_str(e)]
-        if batch:
-            for req in batch.requests:
-                if not req.future.done():
-                    req.future.set_exception(e)
-
-    def _handle_http_error(self, e: HTTPError, command: AntaCommand | None = None, batch: AntaCommandBatch | None = None) -> None:
+    def _log_http_error(self, e: HTTPError) -> None:
         """Handle HTTPX HTTPError exception."""
         anta_log_exception(e, f"An error occurred while issuing an eAPI request to {self.name}", logger)
-
-        # Set the exception on the command or batch
-        if command:
-            command.errors = [exc_to_str(e)]
-        if batch:
-            for req in batch.requests:
-                if not req.future.done():
-                    req.future.set_exception(e)
 
     async def refresh(self) -> None:
         """Update attributes of an AsyncEOSDevice instance.

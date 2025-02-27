@@ -25,6 +25,7 @@ from anta.custom_types import Revision
 from anta.logger import anta_log_exception, exc_to_str
 from anta.result_manager.models import AntaTestStatus, TestResult
 from asynceapi import EapiCommandError
+import asynceapi
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -429,23 +430,50 @@ class AntaCommandDispatcher:
                 logger.debug("Timeout reached")
             command_batch = AntaCommandBatch(requests=requests, ofmt=command_format)
             logger.debug("Collecting batch %s", command_batch.req_id)
-            task = asyncio.create_task(device.collect_batch(command_batch), name=f"collect_batch_{device.name}_{command_batch.req_id}")
+            task = asyncio.create_task(
+                device.collect_batch(commands=[req.command for req in requests], ofmt=command_format, req_id=command_batch.req_id),
+                name=f"collect_batch_{device.name}_{command_batch.req_id}"
+            )
 
             # Add an exception handler to the task since `collect_batch` can be user-defined code
-            task.add_done_callback(lambda task, batch=command_batch: self._handle_batch_exception(task, batch))
+            task.add_done_callback(lambda task, batch=command_batch: self.process_batch_results(task, batch))
 
             self.tasks.append(task)
 
-    def _handle_batch_exception(self, task: asyncio.Task, command_batch: AntaCommandBatch) -> None:
-        """Handle exceptions raised by the batch collection task if any."""
+    def process_batch_results(self, task: asyncio.Task, batch: AntaCommandBatch) -> None:
+        """Process the results of a command batch."""
+        logger.debug("Processing batch %s", batch.req_id)
         try:
-            task.result()
+            results = task.result()
+
+        except asynceapi.EapiCommandsError as e:
+            for i, req in enumerate(batch.requests):
+                offset = 1 if req.device.enable else 0
+                res = e.get_result(i + offset)
+                if res["success"] and not req.future.done():
+                    req.future.set_result(res["output"])
+                    continue
+                if not res["success"] and not req.future.done():
+                    new_exc = asynceapi.EapiCommandError(
+                        failed=req.command,
+                        errors=res["errors"],
+                        errmsg=e.jsonrpc_error_message,
+                        passed=[],
+                        not_exec=[],
+                    )
+                    temp_cmd = AntaCommand(command=req.command)
+                    req.device._handle_eapi_command_error(new_exc, temp_cmd)
+                    req.future.set_exception(new_exc)
         except Exception as e:  # noqa: BLE001
-            message = f"Exception raised while collecting batch {command_batch.req_id} (on device {command_batch.requests[0].device.name})"
+            message = f"Exception raised while collecting batch {batch.req_id} (on device {batch.requests[0].device.name})"
             anta_log_exception(e, message, logger)
-            for req in command_batch.requests:
+            for req in batch.requests:
                 if not req.future.done():
                     req.future.set_exception(e)
+        else:
+            for req, res in zip(batch.requests, results, strict=True):
+                if not req.future.done():
+                    req.future.set_result(res)
 
     def enqueue(self, request: AntaCommandRequest) -> None:
         """Enqueue a request."""
