@@ -20,9 +20,10 @@ import httpx
 # -----------------------------------------------------------------------------
 # Private Imports
 # -----------------------------------------------------------------------------
+from ._models import EapiRequest, EapiResponse
 from .aio_portcheck import port_check_url
 from .config_session import SessionConfig
-from .errors import EapiCommandError, EapiMultipleCommandError
+from .errors import EapiCommandError
 
 if TYPE_CHECKING:
     from ._types import EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput, JsonRpc
@@ -134,7 +135,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiJsonOutput: ...
 
@@ -151,7 +151,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiJsonOutput]: ...
 
@@ -168,7 +167,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiTextOutput: ...
 
@@ -185,7 +183,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiTextOutput]: ...
 
@@ -202,7 +199,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiJsonOutput | None: ...
 
@@ -219,7 +215,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiJsonOutput] | None: ...
 
@@ -236,7 +231,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiTextOutput | None: ...
 
@@ -253,7 +247,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> list[EapiTextOutput] | None: ...
 
@@ -269,7 +262,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> EapiJsonOutput | EapiTextOutput | list[EapiJsonOutput] | list[EapiTextOutput] | None:
         """Execute one or more CLI commands.
@@ -289,9 +281,9 @@ class Device(httpx.AsyncClient):
             that the behavior matches the CLI of the device.  The caller can
             override the "latest" behavior by explicitly setting the version.
         suppress_error
-            When not False, then if the execution of the command would have
-            raised an EapiCommandError or EapiMultipleCommandError rather than
-            raising this exception this routine will return the value None.
+            When not False, then if the execution of the command would-have
+            raised an EapiCommandError, rather than raising this exception this
+            routine will return the value None.
 
             For example, if the following command had raised
             EapiCommandError, now response would be set to None instead.
@@ -313,8 +305,6 @@ class Device(httpx.AsyncClient):
                 return the output of show version.
         timestamps
             If True, return the per-command execution time.
-        stop_on_error
-            If True, eAPI will stop if an error is seen when executing a command.
         req_id
             A unique identifier that will be echoed back by the switch. May be a string or number.
 
@@ -336,13 +326,6 @@ class Device(httpx.AsyncClient):
             Single command, TEXT output, suppress_error=True
         list[str] | None
             Multiple commands, TEXT output, suppress_error=True
-
-        Raises
-        ------
-        EapiCommandError
-            When suppress_error & stop_on_error are True, raise the exception when one command results in an error response.
-        EapiMultipleCommandError
-            When suppress_error is True & stop_on_error is False, raise the exception when one or more commands result in an error response.
         """
         if not any((command, commands)):
             msg = "Required 'command' or 'commands'"
@@ -355,14 +338,13 @@ class Device(httpx.AsyncClient):
             auto_complete=auto_complete,
             expand_aliases=expand_aliases,
             timestamps=timestamps,
-            stop_on_error=stop_on_error,
             req_id=req_id,
         )
 
         try:
             res = await self.jsonrpc_exec(jsonrpc)
             return res[0] if command else res
-        except (EapiCommandError, EapiMultipleCommandError):
+        except EapiCommandError:
             if suppress_error:
                 return None
             raise
@@ -376,7 +358,6 @@ class Device(httpx.AsyncClient):
         auto_complete: bool = False,
         expand_aliases: bool = False,
         timestamps: bool = False,
-        stop_on_error: bool = True,
         req_id: int | str | None = None,
     ) -> JsonRpc:
         """Create the JSON-RPC command dictionary object.
@@ -394,13 +375,13 @@ class Device(httpx.AsyncClient):
             that the behavior matches the CLI of the device.  The caller can
             override the "latest" behavior by explicitly setting the version.
         auto_complete
-            Enabled/disables the command auto-compelete feature of the eAPI. Per the
+            Enabled/disables the command auto-compelete feature of the EAPI.  Per the
             documentation:
                 Allows users to use shorthand commands in eAPI calls. With this
                 parameter included a user can send 'sh ver' via eAPI to get the
                 output of 'show version'.
         expand_aliases
-            Enables/disables the command use of User defined alias. Per the
+            Enables/disables the command use of User defined alias.  Per the
             documentation:
                 Allowed users to provide the expandAliases parameter to eAPI
                 calls. This allows users to use aliased commands via the API.
@@ -409,15 +390,13 @@ class Device(httpx.AsyncClient):
                 return the output of show version.
         timestamps
             If True, return the per-command execution time.
-        stop_on_error
-            If True, eAPI will stop if an error is seen when executing a command.
         req_id
             A unique identifier that will be echoed back by the switch. May be a string or number.
 
         Returns
         -------
-        JsonRpc:
-            Dictionary containing the JSON payload to run the command.
+        dict[str, Any]:
+            dict containing the JSON payload to run the command.
 
         """
         return {
@@ -430,7 +409,6 @@ class Device(httpx.AsyncClient):
                 "autoComplete": auto_complete,
                 "expandAliases": expand_aliases,
                 "timestamps": timestamps,
-                "stopOnError": stop_on_error,
             },
             "id": req_id or id(self),
         }
@@ -441,20 +419,17 @@ class Device(httpx.AsyncClient):
         Parameters
         ----------
         jsonrpc
-            The JSON-RPC as created by the method `_jsonrpc_command()`.
+            The JSON-RPC as created by the `meth`:_jsonrpc_command().
 
         Raises
         ------
         EapiCommandError
-            When stopOnError is True and one command results in an error response.
-        EapiMultipleCommandError
-            When stopOnError is False and one or more commands result in an error response.
-
+            In the event that a command resulted in an error response.
 
         Returns
         -------
-        list[EapiJsonOutput] | list[EapiTextOutput]
-            The list of command results; either dict or string depending on the
+        list[dict[str, Any] | str]
+            The list of command results; either dict or text depending on the
             JSON-RPC format parameter.
         """
         res = await self.post("/command-api", json=jsonrpc)
@@ -466,16 +441,14 @@ class Device(httpx.AsyncClient):
 
         get_output = (lambda _r: _r["output"]) if ofmt == "text" else (lambda _r: _r)
 
-        # If there are no errors then return the list of command results.
+        # if there are no errors then return the list of command results.
         if (err_data := body.get("error")) is None:
             return [get_output(cmd_res) for cmd_res in body["result"]]
 
         # ---------------------------------------------------------------------
-        # If we are here, then there were some command errors. Raise a
+        # if we are here, then there were some command errors.  Raise a
         # EapiCommandError exception with args (commands that failed, passed,
-        # not-executed). If stopOnError is false, we instead raise a
-        # EapiMultipleCommandError exception that contains a mapping of the
-        # commands to their results or errors.
+        # not-executed).
         # ---------------------------------------------------------------------
 
         # -------------------------- eAPI specification ----------------------
@@ -485,22 +458,9 @@ class Device(httpx.AsyncClient):
         # data object is a list of objects corresponding to the results of all
         # commands up to, and including, the failed command. If there was a an
         # error before any commands were executed (e.g. bad credentials), data
-        # will be empty. By default, when a command fails, execution stops at
-        # that point. In this case, the last object in the data array will always
-        # correspond to the failed command, and the command failure details are
-        # always stored in the errors array. When stopOnError is set to false,
-        # eAPI will continue processing subsequent commands even after a command
-        # fails. In This scenario, the data object will contain results for all
-        # executed commands, including potentially multiple failed commands. Each
-        # failed command's result will contain an errors array with the failure
-        # detauls.
-
-        if jsonrpc["params"]["stopOnError"] is False:
-            raise EapiMultipleCommandError(
-                jsonrpc_error=err_data,
-                commands=commands,
-                ofmt=ofmt,
-            )
+        # will be empty. The last object in the data array will always
+        # correspond to the failed command. The command failure details are
+        # always stored in the errors array.
 
         cmd_data = err_data["data"]
         len_data = len(cmd_data)
@@ -515,6 +475,13 @@ class Device(httpx.AsyncClient):
             errmsg=err_msg,
             not_exec=commands[err_at + 1 :],
         )
+
+    async def _execute(self, request: EapiRequest, *, raise_on_error: bool = False) -> EapiResponse:
+        """Execute the eAPI request."""
+        res = await self.post("/command-api", json=request.to_jsonrpc())
+        res.raise_for_status()
+        body = res.json()
+        return EapiResponse.from_jsonrpc(body, request, raise_on_error=raise_on_error)
 
     def config_session(self, name: str) -> SessionConfig:
         """Return a SessionConfig instance bound to this device with the given session name.

@@ -44,7 +44,7 @@ class JsonRpcParams(TypedDict):
 
     version: NotRequired[int | Literal["latest"]]
     cmds: list[EapiSimpleCommand | EapiComplexCommand]
-    format: NotRequired[Literal["json", "text"]]
+    format: NotRequired[EapiCommandFormat]
     autoComplete: NotRequired[bool]
     expandAliases: NotRequired[bool]
     timestamps: NotRequired[bool]
@@ -59,13 +59,13 @@ class JsonRpcError(TypedDict):
     data: list[dict[str, Any] | str]
 
 
-class EapiCommandResult(TypedDict):
-    """Type definition of an eAPI command result in EapiMultipleCommandError."""
+class JsonRpcResponse(TypedDict):
+    """Type definition of a JSON-RPC response payload."""
 
-    command: EapiSimpleCommand | EapiComplexCommand
-    output: EapiJsonOutput | EapiTextOutput | None
-    errors: list[str]
-    success: bool
+    jsonrpc: Literal["2.0"]
+    id: str
+    error: NotRequired[JsonRpcError]
+    result: list[dict[str, Any]]
 
 
 class EapiCommandFormat(str, Enum):
