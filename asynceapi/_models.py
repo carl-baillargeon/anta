@@ -6,16 +6,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
-from asynceapi._types import EapiCommandFormat, EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput, JsonRpc, JsonRpcResponse
-from asynceapi.errors import EapiReponseError
+from asynceapi._types import EapiCommandFormat, EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput, JsonRpc
+from asynceapi.errors import _EapiReponseError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
+# pylint: disable=too-many-instance-attributes
 @dataclass(frozen=True)
 class EapiRequest:
     """Model for an eAPI request."""
@@ -27,7 +28,7 @@ class EapiRequest:
     auto_complete: bool = False
     expand_aliases: bool = False
     stop_on_error: bool = True
-    id: str = field(default_factory=lambda: uuid4().hex)
+    id: int | str = field(default_factory=lambda: uuid4().hex)
 
     def to_jsonrpc(self) -> JsonRpc:
         """Return the JSON-RPC payload for the request."""
@@ -64,7 +65,7 @@ class EapiResponse:
 
     @property
     def results(self) -> list[EapiCommandResult]:
-        """Get all results as a list, orgered by command index."""
+        """Get all results as a list, ordered by command index."""
         return [self._results[i] for i in sorted(self._results.keys())]
 
     @property
@@ -99,10 +100,10 @@ class EapiResponse:
         """Return the number of results."""
         return len(self._results)
 
-    def __iter__(self) -> Iterator[tuple[int, EapiCommandResult]]:
-        """Enable iteration over index, result pairs."""
+    def __iter__(self) -> Iterator[EapiCommandResult]:
+        """Enable iteration over the results."""
         for index in sorted(self._results.keys()):
-            yield index, self._results[index]
+            yield self._results[index]
 
     def get_result(self, index: int) -> EapiCommandResult | None:
         """Get the result for a command by its index in the original request."""
@@ -123,7 +124,7 @@ class EapiResponse:
         return index < self._executed_count
 
     @classmethod
-    def from_jsonrpc(cls, response: JsonRpcResponse, request: EapiRequest, *, raise_on_error: bool = False) -> EapiResponse:
+    def from_jsonrpc(cls, response: dict[str, Any], request: EapiRequest, *, raise_on_error: bool = False) -> EapiResponse:
         """Build an EapiResponse from a JSON-RPC response."""
         has_error = "error" in response
         response_data = response["error"]["data"] if has_error else response["result"]
@@ -195,7 +196,7 @@ class EapiResponse:
         )
 
         if raise_on_error and has_error:
-            raise EapiReponseError(response_obj)
+            raise _EapiReponseError(response_obj)
 
         return response_obj
 

@@ -49,7 +49,7 @@ class EapiCommandError(RuntimeError):
         return self.errmsg
 
 
-class EapiReponseError(RuntimeError):
+class _EapiReponseError(RuntimeError):
     """Exception raised when an eAPI response contains errors."""
 
     def __init__(self, response: EapiResponse) -> None:

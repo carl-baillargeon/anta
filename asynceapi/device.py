@@ -21,6 +21,7 @@ import httpx
 # Private Imports
 # -----------------------------------------------------------------------------
 from ._models import EapiRequest, EapiResponse
+from ._types import EapiCommandFormat
 from .aio_portcheck import port_check_url
 from .config_session import SessionConfig
 from .errors import EapiCommandError
@@ -405,7 +406,7 @@ class Device(httpx.AsyncClient):
             "params": {
                 "version": version,
                 "cmds": commands,
-                "format": ofmt,
+                "format": EapiCommandFormat(ofmt),
                 "autoComplete": auto_complete,
                 "expandAliases": expand_aliases,
                 "timestamps": timestamps,

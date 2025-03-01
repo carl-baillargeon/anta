@@ -51,23 +51,6 @@ class JsonRpcParams(TypedDict):
     stopOnError: NotRequired[bool]
 
 
-class JsonRpcError(TypedDict):
-    """Type definition of a JSON-RPC error payload."""
-
-    code: int
-    message: str
-    data: list[dict[str, Any] | str]
-
-
-class JsonRpcResponse(TypedDict):
-    """Type definition of a JSON-RPC response payload."""
-
-    jsonrpc: Literal["2.0"]
-    id: str
-    error: NotRequired[JsonRpcError]
-    result: list[dict[str, Any]]
-
-
 class EapiCommandFormat(str, Enum):
     """Enum for the eAPI command format.
 

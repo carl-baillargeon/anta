@@ -7,6 +7,6 @@
 
 from .config_session import SessionConfig
 from .device import Device
-from .errors import EapiCommandError, EapiReponseError
+from .errors import EapiCommandError
 
-__all__ = ["Device", "EapiCommandError", "EapiReponseError", "SessionConfig"]
+__all__ = ["Device", "EapiCommandError", "SessionConfig"]
