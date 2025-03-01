@@ -20,8 +20,8 @@ import httpx
 # -----------------------------------------------------------------------------
 # Private Imports
 # -----------------------------------------------------------------------------
+from ._constants import EapiCommandFormat
 from ._models import EapiRequest, EapiResponse
-from ._types import EapiCommandFormat
 from .aio_portcheck import port_check_url
 from .config_session import SessionConfig
 from .errors import EapiCommandError

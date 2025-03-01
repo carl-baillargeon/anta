@@ -9,11 +9,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
-from asynceapi._types import EapiCommandFormat, EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput, JsonRpc
-from asynceapi.errors import _EapiReponseError
+from ._constants import EapiCommandFormat
+from .errors import _EapiReponseError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from ._types import EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput, JsonRpc
 
 
 # pylint: disable=too-many-instance-attributes
