@@ -206,11 +206,11 @@ class AntaRunner(BaseModel):
         with Catchtime(logger=logger, message="Preparing ANTA NRFU Run"):
             # Initialize command dispatcher if enabled
             if self._settings.command_dispatcher:
-                self._command_dispatcher = AntaCommandDispatcher(max_batch_size=self._settings.command_dispatcher_batch_size)
+                self._command_dispatcher = AntaCommandDispatcher(batch_size=self._settings.command_dispatcher_batch_size)
                 logger.info(
-                    "Command dispatcher enabled with batch_timeout=%s, max_batch_size=%s",
+                    "Command dispatcher enabled with batch_timeout=%s, batch_size=%s",
                     self._command_dispatcher.batch_timeout,
-                    self._command_dispatcher.max_batch_size,
+                    self._command_dispatcher.batch_size,
                 )
             # Set up inventory
             if not await self._setup_inventory(filters, dry_run=dry_run):

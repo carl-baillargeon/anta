@@ -11,7 +11,6 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
 from functools import cached_property, wraps
 from string import Formatter
 from time import time
@@ -25,7 +24,7 @@ from anta.custom_types import Revision
 from anta.logger import anta_log_exception, exc_to_str
 from anta.result_manager.models import AntaTestStatus, TestResult
 from asynceapi import EapiCommandError
-import asynceapi
+from asynceapi._constants import EapiCommandFormat
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -74,7 +73,7 @@ class AntaTemplate:
         template: str,
         version: Literal[1, "latest"] = "latest",
         revision: Revision | None = None,
-        ofmt: AntaCommandFormat = "json",
+        ofmt: EapiCommandFormat = EapiCommandFormat.JSON,
         *,
         use_cache: bool = True,
     ) -> None:
@@ -138,31 +137,6 @@ class AntaTemplate:
         )
 
 
-class CommandNotExecutedError(RuntimeError):
-    """Exception raised for commands not executed due to a previous error in the batch."""
-
-    def __init__(self, command: str, failed_command: str, error_message: str, device_name: str) -> None:
-        self.command = command
-        self.failed_command = failed_command
-        self.error_message = error_message
-        self.device_name = device_name
-        super().__init__(f"Command '{command}' not executed on device '{device_name}' due to previous failure of '{failed_command}': {error_message}")
-
-
-class AntaCommandFormat(str, Enum):
-    """Command output format Enum for the AntaCommand.
-
-    NOTE: This could be updated to StrEnum when Python 3.11 is the minimum supported version in ANTA.
-    """
-
-    JSON = "json"
-    TEXT = "text"
-
-    def __str__(self) -> str:
-        """Override the __str__ method to return the value of the Enum, mimicking the behavior of StrEnum."""
-        return self.value
-
-
 class AntaCommand(BaseModel):
     """Class to define a command.
 
@@ -205,7 +179,7 @@ class AntaCommand(BaseModel):
     command: str
     version: Literal[1, "latest"] = "latest"
     revision: Revision | None = None
-    ofmt: AntaCommandFormat = "json"
+    ofmt: EapiCommandFormat = EapiCommandFormat.JSON
     output: dict[str, Any] | str | None = None
     template: AntaTemplate | None = None
     errors: list[str] = []
@@ -315,33 +289,28 @@ class AntaCommandRequest:
     """
 
     device: AntaDevice
-    command: str
-    revision: Revision | None = None
-    ofmt: AntaCommandFormat = "json"
-    # Each request carries a Future that will eventually hold the command's response
+    command: AntaCommand
+    # Each request carries a Future that will eventually hold the command's result or exception
     future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
 
-
-@dataclass
-class AntaCommandBatch:
-    """Container for a list of AntaCommandRequest's with batch-level settings."""
-
-    requests: list[AntaCommandRequest]
-    ofmt: AntaCommandFormat = "json"
-    req_id: str = field(default_factory=lambda: f"ANTA-BATCH-{int(time())}-{uuid4().hex[:8]}")
+    @property
+    def uid(self) -> tuple:
+        """Unique identifier for this request based on device and command."""
+        return (self.device, self.command.uid)
 
 
 class AntaCommandDispatcher:
     """Class to dispatch AntaCommand's to devices."""
 
-    def __init__(self, batch_timeout: float = 0.5, max_batch_size: int = 20) -> None:
+    def __init__(self, batch_timeout: float = 0.5, batch_size: int = 20) -> None:
         """Initialize the dispatcher."""
         self.queues: dict[tuple, asyncio.Queue] = {}
         self.tasks: list[asyncio.Task] = []
         self.batch_timeout = batch_timeout
-        self.max_batch_size = max_batch_size
-        self.dedup_map: dict[tuple, AntaCommandRequest] = {}
-        self.dedup_lock: asyncio.Lock = asyncio.Lock()
+        self.batch_size = batch_size
+        self.response_registry: dict[tuple, AntaCommandRequest] = {}
+        self.command_registry: set[tuple] = set()
+        self.registry_lock: asyncio.Lock = asyncio.Lock()
 
     async def dispatch_commands(self, device: AntaDevice, commands: list[AntaCommand]) -> None:
         """Dispatch a list of AntaCommand's and update their output and errors attributes.
@@ -360,20 +329,27 @@ class AntaCommandDispatcher:
         commands
             List of AntaCommand instances to dispatch and collect.
         """
-        # Create and enqueue requests
-        pairs: list[tuple[AntaCommand, AntaCommandRequest]] = []
+        # Create requests for all commands
+        requests: list[AntaCommandRequest] = []
+
         for cmd in commands:
             req = await self.create_request(device, cmd)
-            self.enqueue(req)
-            pairs.append((cmd, req))
+            requests.append(req)
+
+            # Only enqueue commands that haven't been dispatched yet
+            async with self.registry_lock:
+                if req.uid not in self.command_registry:
+                    self.command_registry.add(req.uid)
+                    self.enqueue(req)
 
         # Wait for all futures to complete
         logger.debug("Waiting for all commands to complete")
-        await asyncio.gather(*(req.future for (_, req) in pairs), return_exceptions=True)
+        await asyncio.gather(*(req.future for req in requests), return_exceptions=True)
 
-        # Update each AntaCommand's output and errors
+        # Update each AntaCommand with results directly from its request
         logger.debug("Updating commands with collected data")
-        for cmd, req in pairs:
+        for req in requests:
+            cmd = req.command
             exc = req.future.exception()
             if exc is not None:
                 cmd.errors = exc.errors if isinstance(exc, EapiCommandError) else [exc_to_str(exc)]
@@ -385,20 +361,21 @@ class AntaCommandDispatcher:
 
         If an identical command (same uid) is already pending, return a new AntaCommandRequest sharing the same Future (output).
         """
-        dedup_key = (device, command.uid)
-        async with self.dedup_lock:
-            if dedup_key in self.dedup_map:
+        # Create a new request
+        req = AntaCommandRequest(device=device, command=command)
+
+        async with self.registry_lock:
+            if req.uid in self.response_registry:
                 logger.debug("Reusing existing Future for command %s on device %s", command.command, device.name)
                 # Reuse the existing Future
-                existing_req = self.dedup_map[dedup_key]
-                return AntaCommandRequest(device=device, command=command.command, revision=command.revision, ofmt=command.ofmt, future=existing_req.future)
+                req.future = self.response_registry[req.uid].future
+            else:
+                # Register this as the first request with this ID
+                self.response_registry[req.uid] = req
 
-            # Create a new Future
-            req = AntaCommandRequest(device=device, command=command.command, revision=command.revision, ofmt=command.ofmt)
-            self.dedup_map[dedup_key] = req
-            return req
+        return req
 
-    def get_queue(self, device: AntaDevice, command_format: AntaCommandFormat) -> asyncio.Queue:
+    def get_queue(self, device: AntaDevice, command_format: EapiCommandFormat) -> asyncio.Queue:
         """Get a queue for a device and command format."""
         key = (device, command_format)
         if key not in self.queues:
@@ -408,7 +385,7 @@ class AntaCommandDispatcher:
             self.tasks.append(task)
         return self.queues[key]
 
-    async def process_queue(self, device: AntaDevice, command_format: AntaCommandFormat, queue: asyncio.Queue) -> None:
+    async def process_queue(self, device: AntaDevice, command_format: EapiCommandFormat, queue: asyncio.Queue) -> None:
         """Process the queue of commands for a device."""
         logger.debug("Starting queue processing for device %s and command format %s", device.name, command_format)
         while True:
@@ -419,67 +396,75 @@ class AntaCommandDispatcher:
             except asyncio.CancelledError:
                 logger.debug("Queue processing cancelled")
                 break
+
             requests = [first_req]
             try:
-                # Gather additional requests until timeout or max_batch_size is reached
-                while len(requests) < self.max_batch_size:
+                # Gather additional requests until timeout or batch_size is reached
+                while len(requests) < self.batch_size:
                     req = await asyncio.wait_for(queue.get(), timeout=self.batch_timeout)
                     logger.debug("Adding request to batch")
                     requests.append(req)
             except asyncio.TimeoutError:
                 logger.debug("Timeout reached")
-            command_batch = AntaCommandBatch(requests=requests, ofmt=command_format)
-            logger.debug("Collecting batch %s", command_batch.req_id)
+
+            request_id = f"ANTA-BATCH-{int(time())}-{uuid4().hex[:8]}"
+            complex_commands = [
+                {"cmd": req.command.command, "revision": req.command.revision} if req.command.revision is not None else {"cmd": req.command.command}
+                for req in requests
+            ]
+            logger.debug("Collecting batch %s", request_id)
             task = asyncio.create_task(
-                device.collect_batch(commands=[req.command for req in requests], ofmt=command_format, req_id=command_batch.req_id),
-                name=f"collect_batch_{device.name}_{command_batch.req_id}"
+                device.collect_batch(commands=complex_commands, ofmt=command_format, req_id=request_id),
+                name=f"collect_batch_{device.name}_{request_id}",
             )
 
             # Add an exception handler to the task since `collect_batch` can be user-defined code
-            task.add_done_callback(lambda task, batch=command_batch: self.process_batch_results(task, batch))
+            task.add_done_callback(lambda task, reqs=requests: self.process_command_results(task, reqs))
 
             self.tasks.append(task)
 
-    def process_batch_results(self, task: asyncio.Task, batch: AntaCommandBatch) -> None:
+    def process_command_results(self, task: asyncio.Task, requests: list[AntaCommandRequest]) -> None:
         """Process the results of a command batch."""
-        logger.debug("Processing batch %s", batch.req_id)
+        logger.debug("Processing eAPI results for batch %s", task.get_name())
         try:
+            # Get the command results from the task
             results = task.result()
 
-        except asynceapi.EapiCommandsError as e:
-            for i, req in enumerate(batch.requests):
-                offset = 1 if req.device.enable else 0
-                res = e.get_result(i + offset)
-                if res["success"] and not req.future.done():
-                    req.future.set_result(res["output"])
-                    continue
-                if not res["success"] and not req.future.done():
-                    new_exc = asynceapi.EapiCommandError(
-                        failed=req.command,
-                        errors=res["errors"],
-                        errmsg=e.jsonrpc_error_message,
-                        passed=[],
-                        not_exec=[],
-                    )
-                    temp_cmd = AntaCommand(command=req.command)
-                    req.device._handle_eapi_command_error(new_exc, temp_cmd)
-                    req.future.set_exception(new_exc)
+            # Process each result
+            for req, res in zip(requests, results):
+                if not req.future.done():
+                    if res.success:
+                        # Command succeeded - set the output
+                        req.future.set_result(res.output)
+                    else:
+                        # Command failed - set an exception with the error details
+                        # TODO: Add logs
+                        exc = EapiCommandError(
+                            failed=req.command.command,
+                            errors=res.errors,
+                            errmsg="Command execution failed",
+                            passed=[],
+                            not_exec=[],
+                        )
+                        req.future.set_exception(exc)
+
+        # Catch any exception and set it on the futures
         except Exception as e:  # noqa: BLE001
-            message = f"Exception raised while collecting batch {batch.req_id} (on device {batch.requests[0].device.name})"
-            anta_log_exception(e, message, logger)
-            for req in batch.requests:
+            for req in requests:
                 if not req.future.done():
                     req.future.set_exception(e)
-        else:
-            for req, res in zip(batch.requests, results, strict=True):
-                if not req.future.done():
-                    req.future.set_result(res)
 
     def enqueue(self, request: AntaCommandRequest) -> None:
         """Enqueue a request."""
-        logger.debug("Enqueueing command %s on device %s", request.command, request.device.name)
-        q = self.get_queue(request.device, request.ofmt)
+        logger.debug("Enqueueing command %s on device %s", request.command.command, request.device.name)
+        q = self.get_queue(request.device, request.command.ofmt)
         q.put_nowait(request)
+
+    async def reset_registry(self) -> None:
+        """Reset the registries."""
+        async with self.registry_lock:
+            self.response_registry.clear()
+            self.command_registry.clear()
 
     async def shutdown(self) -> None:
         """Shutdown the dispatcher."""

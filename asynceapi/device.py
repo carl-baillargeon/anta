@@ -477,7 +477,7 @@ class Device(httpx.AsyncClient):
             not_exec=commands[err_at + 1 :],
         )
 
-    async def _execute(self, request: EapiRequest, *, raise_on_error: bool = False) -> EapiResponse:
+    async def _execute(self, request: EapiRequest, *, raise_on_error: bool = True) -> EapiResponse:
         """Execute the eAPI request."""
         res = await self.post("/command-api", json=request.to_jsonrpc())
         res.raise_for_status()

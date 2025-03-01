@@ -22,13 +22,16 @@ from httpx import ConnectError, HTTPError, TimeoutException
 import asynceapi
 from anta import __DEBUG__
 from anta.logger import anta_log_exception, exc_to_str
-from anta.models import AntaCommand, AntaCommandBatch, CommandNotExecutedError
+from anta.models import AntaCommand
+from asynceapi._models import EapiRequest
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from asynceapi._types import EapiCommandFormat, EapiComplexCommand, EapiJsonOutput, EapiSimpleCommand, EapiTextOutput
+    from asynceapi._constants import EapiCommandFormat
+    from asynceapi._models import EapiCommandResult
+    from asynceapi._types import EapiComplexCommand, EapiSimpleCommand
 
 logger = logging.getLogger(__name__)
 
@@ -279,26 +282,14 @@ class AntaDevice(ABC):
         """
         await asyncio.gather(*(self.collect(command=command, collection_id=collection_id) for command in commands))
 
-    async def collect_batch(self, batch: AntaCommandBatch) -> list[dict[str, Any] | str]:
+    async def collect_batch(
+        self, commands: list[EapiSimpleCommand | EapiComplexCommand], ofmt: EapiCommandFormat, req_id: str | None = None
+    ) -> list[EapiCommandResult]:
         """Collect multiple commands in a batch.
 
         It is not mandatory to implement this for a valid AntaDevice subclass.
-
-        Parameters
-        ----------
-        batch
-            The batch of commands to collect.
-        command_format
-            The format of the commands in the batch.
-        collection_id
-            An identifier used to build the eAPI request ID.
-
-        Returns
-        -------
-        list
-            List of command outputs.
         """
-        _ = batch
+        _ = commands, ofmt, req_id
         msg = f"collect_batch() method has not been implemented in {self.__class__.__name__} definition"
         raise NotImplementedError(msg)
 
@@ -503,7 +494,7 @@ class AsyncEOSDevice(AntaDevice):
         return self._command_semaphore
 
     async def _collect(self, command: AntaCommand, *, collection_id: str | None = None) -> None:
-        """Collect device command output from EOS using aio-eapi.
+        """Collect device command output from EOS using `asynceapi`.
 
         Supports outformat `json` and `text` as output structure.
         Gain privileged access using the `enable_password` attribute
@@ -538,6 +529,8 @@ class AsyncEOSDevice(AntaDevice):
                     version=command.version,
                     req_id=f"ANTA-{collection_id}-{id(command)}" if collection_id else f"ANTA-{id(command)}",
                 )
+                # Do not keep response of 'enable' command
+                command.output = response[-1]
             except asynceapi.EapiCommandError as e:
                 # This block catches exceptions related to EOS issuing an error
                 self._handle_eapi_command_error(e, command)
@@ -547,32 +540,41 @@ class AsyncEOSDevice(AntaDevice):
                 self._log_timeout_exception(e)
             except (ConnectError, OSError) as e:
                 # This block catches OSError and socket issues related exceptions
-                self._handle_network_exception(e, command)
+                command.errors = [exc_to_str(e)]
+                self._log_network_exception(e)
             except HTTPError as e:
                 # This block catches most of the HTTPX exceptions and logs a general message
-                self._handle_http_error(e, command)
-            else:
-                # Do not keep response of 'enable' command
-                command.output = response[-1]
-                logger.debug("%s: %s", self.name, command)
-
+                command.errors = [exc_to_str(e)]
+                self._log_http_error(e)
+            logger.debug("%s: %s", self.name, command)
 
     async def collect_batch(
-            self,
-            commands: list[EapiSimpleCommand | EapiComplexCommand],
-            ofmt: EapiCommandFormat,
-            req_id: str | None = None
-    ) -> list[EapiTextOutput | EapiJsonOutput]:
+        self, commands: list[EapiSimpleCommand | EapiComplexCommand], ofmt: EapiCommandFormat, req_id: str | None = None
+    ) -> list[EapiCommandResult]:
         """Collect multiple commands in a batch."""
         async with self._command_semaphore:
+            prepared_commands = commands.copy()
+
             # Add 'enable' command if required
-            if self.enable and self._enable_password is not None:
-                commands.insert(0, {"cmd": "enable", "input": str(self._enable_password)})
-            elif self.enable:
-                # No password
-                commands.insert(0, {"cmd": "enable"})
+            offset = 0
+            if self.enable:
+                offset = 1
+                if self._enable_password is not None:
+                    prepared_commands.insert(0, {"cmd": "enable", "input": str(self._enable_password)})
+                else:
+                    prepared_commands.insert(0, {"cmd": "enable"})
+
             try:
-                response = await self._session.cli(commands=commands, ofmt=ofmt, stop_on_error=False, req_id=req_id or f"ANTA-BATCH-{int(time())}-{uuid4().hex[:8]}")
+                request = EapiRequest(
+                    commands=prepared_commands, version=1, format=ofmt, stop_on_error=False, id=req_id or f"ANTA-BATCH-{int(time())}-{uuid4().hex[:8]}"
+                )
+
+                # Execute without raising errors for command failures
+                response = await self._session._execute(request=request, raise_on_error=False)  # noqa: SLF001
+
+                # Return all results except for the 'enable' command
+                return response.results[offset:]
+
             except TimeoutException as e:
                 # This block catches HTTPX timeout exceptions
                 self._log_timeout_exception(e)
@@ -585,11 +587,6 @@ class AsyncEOSDevice(AntaDevice):
                 # This block catches most of the HTTPX exceptions
                 self._log_http_error(e)
                 raise
-            else:
-                # Do not keep response of 'enable' command
-                if self.enable:
-                    response = response[1:]
-                return response
 
     def _handle_eapi_command_error(self, e: asynceapi.EapiCommandError, command: AntaCommand) -> None:
         """Handle the eAPI command errors."""
