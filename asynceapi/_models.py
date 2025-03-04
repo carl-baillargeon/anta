@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from ._constants import EapiCommandFormat
-from .errors import _EapiReponseError
+from ._errors import EapiReponseError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -21,7 +21,27 @@ if TYPE_CHECKING:
 # pylint: disable=too-many-instance-attributes
 @dataclass(frozen=True)
 class EapiRequest:
-    """Model for an eAPI request."""
+    """Model for an eAPI request.
+
+    Attributes
+    ----------
+    commands : list[EapiSimpleCommand | EapiComplexCommand]
+        A list of commands to execute.
+    version : int | Literal["latest"]
+        The eAPI version to use. Defaults to "latest".
+    format : EapiCommandFormat
+        The command output format. Defaults "json".
+    timestamps : bool
+        Include timestamps in the command output. Defaults to False.
+    auto_complete : bool
+        Enable command auto-completion. Defaults to False.
+    expand_aliases : bool
+        Expand command aliases. Defaults to False.
+    stop_on_error : bool
+        Stop command execution on first error. Defaults to True.
+    id : int | str
+        The request ID. Defaults to a random hex string.
+    """
 
     commands: list[EapiSimpleCommand | EapiComplexCommand]
     version: int | Literal["latest"] = "latest"
@@ -33,7 +53,7 @@ class EapiRequest:
     id: int | str = field(default_factory=lambda: uuid4().hex)
 
     def to_jsonrpc(self) -> JsonRpc:
-        """Return the JSON-RPC payload for the request."""
+        """Return the JSON-RPC dictionary payload for the request."""
         return {
             "jsonrpc": "2.0",
             "method": "runCmds",
@@ -52,10 +72,25 @@ class EapiRequest:
 
 @dataclass(frozen=True)
 class EapiResponse:
-    """Model for an eAPI response."""
+    """Model for an eAPI response.
+
+    Construct an EapiResponse from a JSON-RPC response dictionary using the `from_jsonrpc` class method.
+
+    Can be iterated over to access command results in order of execution.
+
+    Attributes
+    ----------
+    request_id : str
+        The ID of the original request this response corresponds to.
+    _results : dict[int, EapiCommandResult]
+        Dictionary mapping request command indices to their respective results.
+    error_code : int | None
+        The JSON-RPC error code, if any.
+    error_message : str | None
+        The JSON-RPC error message, if any.
+    """
 
     request_id: str
-    _executed_count: int
     _results: dict[int, EapiCommandResult] = field(default_factory=dict)
     error_code: int | None = None
     error_message: str | None = None
@@ -70,34 +105,6 @@ class EapiResponse:
         """Get all results as a list, ordered by command index."""
         return [self._results[i] for i in sorted(self._results.keys())]
 
-    @property
-    def executed_indexes(self) -> list[int]:
-        """Return a list of indexes of commands that were executed."""
-        return list(range(self._executed_count))
-
-    @property
-    def not_executed_indexes(self) -> list[int]:
-        """Return a list of indexes of commands that were not executed."""
-        return [i for i in self._results if i >= self._executed_count]
-
-    @property
-    def first_failed_index(self) -> int | None:
-        """Return the index of the first failed command, or None if all succeeded."""
-        for i in sorted(self._results.keys()):
-            if not self._results[i].success:
-                return i
-        return None
-
-    @property
-    def failed_indexes(self) -> list[int]:
-        """Return a list of indexes of failed commands."""
-        return [i for i, result in self._results.items() if not result.success]
-
-    @property
-    def passed_indexes(self) -> list[int]:
-        """Return a list of indexes of passed commands."""
-        return [i for i, result in self._results.items() if result.success]
-
     def __len__(self) -> int:
         """Return the number of results."""
         return len(self._results)
@@ -107,27 +114,24 @@ class EapiResponse:
         for index in sorted(self._results.keys()):
             yield self._results[index]
 
-    def get_result(self, index: int) -> EapiCommandResult | None:
-        """Get the result for a command by its index in the original request."""
-        return self._results.get(index)
-
-    def get_output(self, index: int) -> EapiJsonOutput | EapiTextOutput | None:
-        """Get the output for a command by its index in the original request."""
-        result = self.get_result(index)
-        return result.output if result else None
-
-    def get_errors(self, index: int) -> list[str] | None:
-        """Get the errors for a command by its index in the original request."""
-        result = self.get_result(index)
-        return result.errors if result else None
-
-    def was_executed(self, index: int) -> bool:
-        """Check if a command was executed."""
-        return index < self._executed_count
-
     @classmethod
     def from_jsonrpc(cls, response: dict[str, Any], request: EapiRequest, *, raise_on_error: bool = False) -> EapiResponse:
-        """Build an EapiResponse from a JSON-RPC response."""
+        """Build an EapiResponse from a JSON-RPC eAPI response.
+
+        Parameters
+        ----------
+        response : dict
+            The JSON-RPC eAPI response dictionary.
+        request : EapiRequest
+            The corresponding EapiRequest.
+        raise_on_error : bool, optional
+            Raise an EapiReponseError if the response contains errors, by default False.
+
+        Returns
+        -------
+        EapiResponse
+            The EapiResponse object.
+        """
         has_error = "error" in response
         response_data = response["error"]["data"] if has_error else response["result"]
 
@@ -162,7 +166,7 @@ class EapiResponse:
                     duration = meta["execDuration"]
 
             elif isinstance(data, str):
-                # Handle JSON string responses (serialized JSON)
+                # Handle case where eAPI returns a JSON string response (serialized JSON) for certain commands
                 try:
                     from json import JSONDecodeError, loads
 
@@ -192,20 +196,37 @@ class EapiResponse:
         response_obj = cls(
             request_id=response["id"],
             _results=results,
-            _executed_count=executed_count,
             error_code=response["error"]["code"] if has_error else None,
             error_message=response["error"]["message"] if has_error else None,
         )
 
         if raise_on_error and has_error:
-            raise _EapiReponseError(response_obj)
+            raise EapiReponseError(response_obj)
 
         return response_obj
 
 
 @dataclass(frozen=True)
 class EapiCommandResult:
-    """Model for an eAPI command result."""
+    """Model for an eAPI command result.
+
+    Attributes
+    ----------
+    command : str
+        The command that was executed.
+    output : EapiJsonOutput | EapiTextOutput | None
+        The command result output. None if the command returned errors.
+    errors : list[str]
+        A list of error messages, if any.
+    success : bool
+        True if the command was successful.
+    was_executed : bool
+        True if the command was executed. When `stop_on_error` is True in the request, some commands may not be executed.
+    start_time : float | None
+        Command execution start time in seconds. Uses Unix epoch format. `timestamps` must be True in the request.
+    duration : float | None
+        Command execution duration in seconds. `timestamps` must be True in the request.
+    """
 
     command: str
     output: EapiJsonOutput | EapiTextOutput | None
