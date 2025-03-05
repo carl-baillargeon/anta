@@ -23,7 +23,6 @@ from anta.constants import EOS_BLACKLIST_CMDS, KNOWN_EOS_ERRORS, UNSUPPORTED_PLA
 from anta.custom_types import Revision
 from anta.logger import anta_log_exception, exc_to_str
 from anta.result_manager.models import AntaTestStatus, TestResult
-from asynceapi import EapiCommandError
 from asynceapi._constants import EapiCommandFormat
 
 if TYPE_CHECKING:
@@ -278,6 +277,19 @@ class AntaCommand(BaseModel):
             raise RuntimeError(msg)
         return any(any(re.match(pattern, e) for e in self.errors) for pattern in KNOWN_EOS_ERRORS)
 
+@dataclass(frozen=True)
+class AntaCommandResult:
+    """Base class for a command result."""
+
+    command: str
+    output: Any
+    errors: list[str] = field(default_factory=list)
+    execution_time: float | None = None
+
+    @property
+    def success(self) -> bool:
+        """Return True if the command was successful, False otherwise."""
+        return not self.errors
 
 @dataclass
 class AntaCommandRequest:
@@ -298,6 +310,16 @@ class AntaCommandRequest:
         """Unique identifier for this request based on device and command."""
         return (self.device, self.command.uid)
 
+class AntaCommandResultError(Exception):
+    """Raised when an error occurs during command execution."""
+
+    def __init__(self, command: str, error_message: str, errors: list[str]) -> None:
+        """Initialize an AntaCommandResultError."""
+        self.command = command
+        self.error_message = error_message
+        self.errors = errors
+
+        super().__init__(self.errmsg)
 
 class AntaCommandDispatcher:
     """Class to dispatch AntaCommand's to devices."""
@@ -352,7 +374,7 @@ class AntaCommandDispatcher:
             cmd = req.command
             exc = req.future.exception()
             if exc is not None:
-                cmd.errors = exc.errors if isinstance(exc, EapiCommandError) else [exc_to_str(exc)]
+                cmd.errors = exc.errors if isinstance(exc, AntaCommandResultError) else [exc_to_str(exc)]
             else:
                 cmd.output = req.future.result()
 
@@ -414,16 +436,16 @@ class AntaCommandDispatcher:
             ]
             logger.debug("Collecting batch %s", request_id)
             task = asyncio.create_task(
-                device.collect_batch(commands=complex_commands, ofmt=command_format, req_id=request_id),
-                name=f"collect_batch_{device.name}_{request_id}",
+                device.execute_commands(commands=complex_commands, ofmt=command_format, req_id=request_id),
+                name=f"execute_commands_{device.name}_{request_id}",
             )
 
-            # Add an exception handler to the task since `collect_batch` can be user-defined code
+            # Add an exception handler to the task since `execute_commands` can be user-defined code
             task.add_done_callback(lambda task, reqs=requests: self.process_command_results(task, reqs))
 
             self.tasks.append(task)
 
-    def process_command_results(self, task: asyncio.Task, requests: list[AntaCommandRequest]) -> None:
+    def process_command_results(self, task: asyncio.Task[list[AntaCommandResult]], requests: list[AntaCommandRequest]) -> None:
         """Process the results of a command batch."""
         logger.debug("Processing eAPI results for batch %s", task.get_name())
         try:
@@ -439,13 +461,7 @@ class AntaCommandDispatcher:
                     else:
                         # Command failed - set an exception with the error details
                         # TODO: Add logs
-                        exc = EapiCommandError(
-                            failed=req.command.command,
-                            errors=res.errors,
-                            errmsg="Command execution failed",
-                            passed=[],
-                            not_exec=[],
-                        )
+                        exc = AntaCommandResultError(command=req.command.command, error_message="Command execution failed", errors=res.errors)
                         req.future.set_exception(exc)
 
         # Catch any exception and set it on the futures

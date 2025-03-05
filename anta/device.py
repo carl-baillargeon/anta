@@ -22,15 +22,13 @@ from httpx import ConnectError, HTTPError, TimeoutException
 import asynceapi
 from anta import __DEBUG__
 from anta.logger import anta_log_exception, exc_to_str
-from anta.models import AntaCommand
+from anta.models import AntaCommand, AntaCommandResult
 from asynceapi._models import EapiRequest
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from asynceapi._constants import EapiCommandFormat
-    from asynceapi._models import EapiCommandResult
     from asynceapi._types import EapiComplexCommand, EapiSimpleCommand
 
 logger = logging.getLogger(__name__)
@@ -282,15 +280,27 @@ class AntaDevice(ABC):
         """
         await asyncio.gather(*(self.collect(command=command, collection_id=collection_id) for command in commands))
 
-    async def collect_batch(
-        self, commands: list[EapiSimpleCommand | EapiComplexCommand], ofmt: EapiCommandFormat, req_id: str | None = None
-    ) -> list[EapiCommandResult]:
-        """Collect multiple commands in a batch.
+    # TODO: ANTA v2.0.0: commands should be a list of a base class representing a command - new version of AntaCommand
+    # TODO: ANTA v2.0.0: This should be an abstract method
+    async def execute_commands(self, commands: list[str | dict[str, Any]], **options: dict[str, Any]) -> list[AntaCommandResult]:
+        """Execute multiple commands and return the results.
 
         It is not mandatory to implement this for a valid AntaDevice subclass.
+
+        Parameters
+        ----------
+        commands
+            List of commands to execute.
+        options
+            Additional options to pass to the command execution method. Options are specific to the device implementation.
+
+        Returns
+        -------
+        list[AntaCommandResult]
+            List of command results.
         """
-        _ = commands, ofmt, req_id
-        msg = f"collect_batch() method has not been implemented in {self.__class__.__name__} definition"
+        _ = commands, options
+        msg = f"execute_commands() method has not been implemented in {self.__class__.__name__} definition"
         raise NotImplementedError(msg)
 
     @abstractmethod
@@ -548,11 +558,13 @@ class AsyncEOSDevice(AntaDevice):
                 self._log_http_error(e)
             logger.debug("%s: %s", self.name, command)
 
-    async def collect_batch(
-        self, commands: list[EapiSimpleCommand | EapiComplexCommand], ofmt: EapiCommandFormat, req_id: str | None = None
-    ) -> list[EapiCommandResult]:
-        """Collect multiple commands in a batch."""
-        async with self._command_semaphore:
+    # TODO: ANTA v2.0.0: commands should be a list of a child class of the new AntaCommand base class
+    async def execute_commands(
+            self, commands: list[str | dict[str, Any]], ofmt: Literal["json", "text"] = "json", req_id: str | int | None = None
+    ) -> list[AntaCommandResult]:
+        """Execute multiple commands in a batch and return the results."""
+        semaphore = await self._get_semaphore()
+        async with semaphore:
             prepared_commands = commands.copy()
 
             # Add 'enable' command if required
@@ -573,7 +585,15 @@ class AsyncEOSDevice(AntaDevice):
                 response = await self._session._execute(request=request, raise_on_error=False)  # noqa: SLF001
 
                 # Return all results except for the 'enable' command
-                return response.results[offset:]
+                return [
+                    AntaCommandResult(
+                        command=res.command,
+                        output=res.output,
+                        errors=res.errors,
+                        execution_time=res.duration,
+                    )
+                    for res in response.results[offset:]
+                ]
 
             except TimeoutException as e:
                 # This block catches HTTPX timeout exceptions
