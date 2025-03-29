@@ -45,6 +45,7 @@ def inventory(request: pytest.FixtureRequest) -> Iterator[AntaInventory]:
         with patch("asyncio.open_connection", AsyncMock(spec=asyncio.open_connection, return_value=(Mock(), Mock()))), respx.mock:
             respx.post(path="/command-api", headers={"Content-Type": "application/json-rpc"}, json__params__cmds__0__cmd="show version").respond(
                 json={
+                    "id": "pytest",
                     "result": [
                         {
                             "modelName": "pytest",

@@ -22,7 +22,6 @@ from anta.logger import anta_log_exception, exc_to_str
 from anta.models import AntaCommand, AntaCommandMetadata
 from asynceapi import Device
 from asynceapi._constants import EapiCommandFormat
-from asynceapi._errors import EapiReponseError
 from asynceapi._models import EapiRequest
 
 if TYPE_CHECKING:
@@ -484,19 +483,19 @@ class AsyncEOSDevice(AntaDevice):
                     timestamps=True,
                     id=f"ANTA-{collection_id}-{id(command)}" if collection_id else f"ANTA-{id(command)}",
                 )
-                response = await self._session.execute(request)
+                response = await self._session.execute(request, raise_on_error=False)
                 result = response.get_result(index=0 if not self.enable else 1)
                 command.output = result.output
+
                 # If the command is supported, we can extract metadata (timestamps) from the response
                 if result.start_time is not None or result.duration is not None:
                     command.metadata = AntaCommandMetadata(start_time=result.start_time, duration=result.duration)
-            except EapiReponseError as e:
-                # This block catches exceptions related to EOS issuing an error.
-                result = e.response.get_result(index=0 if not self.enable else 1)
-                command.errors = result.errors
-                if result.start_time is not None or result.duration is not None:
-                    command.metadata = AntaCommandMetadata(start_time=result.start_time, duration=result.duration)
-                self._log_eapi_response_error(command)
+
+                # Handle command errors if any
+                if not result.success and result.errors:
+                    command.errors = result.errors
+                    self._log_eapi_command_error(command)
+
             except TimeoutException as e:
                 # This block catches Timeout exceptions.
                 command.errors = [exc_to_str(e)]
@@ -528,8 +527,8 @@ class AsyncEOSDevice(AntaDevice):
                 anta_log_exception(e, f"An error occurred while issuing an eAPI request to {self.name}", logger)
             logger.debug("%s: %s", self.name, command)
 
-    def _log_eapi_response_error(self, command: AntaCommand) -> None:
-        """Appropriately log the eAPI response error."""
+    def _log_eapi_command_error(self, command: AntaCommand) -> None:
+        """Appropriately log the eAPI command error."""
         if command.requires_privileges:
             logger.error("Command '%s' requires privileged mode on %s. Verify user permissions and if the `enable` option is required.", command.command, self.name)
         if not command.supported:

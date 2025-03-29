@@ -31,6 +31,7 @@ def test_run_eos_commands(capsys: pytest.CaptureFixture[str], inventory: AntaInv
     try:
         respx.post(path="/command-api", headers={"Content-Type": "application/json-rpc"}, json__params__cmds__0__cmd="show ip bgp summary").respond(
             json={
+                "id": "pytest",
                 "result": [
                     {
                         "mocked": "mock",
