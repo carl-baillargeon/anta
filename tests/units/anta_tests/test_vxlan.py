@@ -196,12 +196,12 @@ DATA: list[dict[str, Any]] = [
                         "vniBindings": {
                             "10020": {"vlan": 20, "dynamicVlan": False, "source": "static", "interfaces": {"Ethernet31": {"dot1q": 0}, "Vxlan1": {"dot1q": 20}}},
                         },
-                        "vniBindingsToVrf": {"500": {"vrfName": "PROD", "vlan": 1199, "source": "evpn"}},
+                        "vniBindingsToVrf": {"500": {"vrfName": "TEST", "vlan": 1199, "source": "evpn"}, "600": {"vrfName": "PROD", "vlan": 1198, "source": "evpn"}},
                     },
                 },
             },
         ],
-        "inputs": {"bindings": {10020: 20, 500: 1199}},
+        "inputs": {"bindings": {10020: 20, 500: 1199, 600: "PROD"}},
         "expected": {"result": "success"},
     },
     {
@@ -223,6 +223,24 @@ DATA: list[dict[str, Any]] = [
         "expected": {"result": "failure", "messages": ["Interface: Vxlan1 VNI: 10010 - Binding not found"]},
     },
     {
+        "name": "failure-vrf-wrong-binding",
+        "test": VerifyVxlanVniBinding,
+        "eos_data": [
+            {
+                "vxlanIntfs": {
+                    "Vxlan1": {
+                        "vniBindings": {
+                            "10020": {"vlan": 20, "dynamicVlan": False, "source": "static", "interfaces": {"Ethernet31": {"dot1q": 0}, "Vxlan1": {"dot1q": 20}}},
+                        },
+                        "vniBindingsToVrf": {"500": {"vrfName": "PROD", "vlan": 1199, "source": "evpn"}, "600": {"vrfName": "TEST", "vlan": 1199, "source": "evpn"}},
+                    },
+                },
+            },
+        ],
+        "inputs": {"bindings": {10020: 20, 500: 1199, 600: "PROD"}},
+        "expected": {"result": "failure", "messages": ["Interface: Vxlan1 VNI: 600 - Wrong VRF binding - Expected: PROD Actual: TEST"]},
+    },
+    {
         "name": "failure-wrong-binding",
         "test": VerifyVxlanVniBinding,
         "eos_data": [
@@ -238,7 +256,7 @@ DATA: list[dict[str, Any]] = [
             },
         ],
         "inputs": {"bindings": {10020: 20, 500: 1199}},
-        "expected": {"result": "failure", "messages": ["Interface: Vxlan1 VNI: 10020 VLAN: 20 - Wrong VLAN binding - Actual: 30"]},
+        "expected": {"result": "failure", "messages": ["Interface: Vxlan1 VNI: 10020 - Wrong VLAN binding - Expected: 20 Actual: 30"]},
     },
     {
         "name": "failure-no-and-wrong-binding",
@@ -258,7 +276,28 @@ DATA: list[dict[str, Any]] = [
         "inputs": {"bindings": {10010: 10, 10020: 20, 500: 1199}},
         "expected": {
             "result": "failure",
-            "messages": ["Interface: Vxlan1 VNI: 10010 - Binding not found", "Interface: Vxlan1 VNI: 10020 VLAN: 20 - Wrong VLAN binding - Actual: 30"],
+            "messages": ["Interface: Vxlan1 VNI: 10010 - Binding not found", "Interface: Vxlan1 VNI: 10020 - Wrong VLAN binding - Expected: 20 Actual: 30"],
+        },
+    },
+    {
+        "name": "failure-wrong-vni-vrf-binding",
+        "test": VerifyVxlanVniBinding,
+        "eos_data": [
+            {
+                "vxlanIntfs": {
+                    "Vxlan1": {
+                        "vniBindings": {
+                            "10020": {"vlan": 30, "dynamicVlan": False, "source": "static", "interfaces": {"Ethernet31": {"dot1q": 0}, "Vxlan1": {"dot1q": 20}}},
+                        },
+                        "vniBindingsToVrf": {"500": {"vrfName": "PROD", "vlan": 1199, "source": "evpn"}},
+                    },
+                },
+            },
+        ],
+        "inputs": {"bindings": {10020: "PROD", 500: 30}},
+        "expected": {
+            "result": "failure",
+            "messages": ["Interface: Vxlan1 VNI: 10020 - Binding not found", "Interface: Vxlan1 VNI: 500 - Wrong VLAN binding - Expected: 30 Actual: 1199"],
         },
     },
     {
@@ -266,7 +305,7 @@ DATA: list[dict[str, Any]] = [
         "test": VerifyVxlanVniBinding,
         "eos_data": [{"vxlanIntfs": {}}],
         "inputs": {"bindings": {10020: 20, 500: 1199}},
-        "expected": {"result": "skipped", "messages": ["Vxlan1 interface is not configured"]},
+        "expected": {"result": "skipped", "messages": ["Interface: Vxlan1 - Not configured"]},
     },
     {
         "name": "success",
@@ -314,7 +353,7 @@ DATA: list[dict[str, Any]] = [
         "test": VerifyVxlanVtep,
         "eos_data": [{"vteps": {}, "interfaces": {}}],
         "inputs": {"vteps": ["10.1.1.5", "10.1.1.6", "10.1.1.7"]},
-        "expected": {"result": "skipped", "messages": ["Vxlan1 interface is not configured"]},
+        "expected": {"result": "skipped", "messages": ["Interface: Vxlan1 - Not configured"]},
     },
     {
         "name": "success",
@@ -328,7 +367,7 @@ DATA: list[dict[str, Any]] = [
         "test": VerifyVxlan1ConnSettings,
         "eos_data": [{"interfaces": {}}],
         "inputs": {"source_interface": "Loopback1", "udp_port": 4789},
-        "expected": {"result": "skipped", "messages": ["Vxlan1 interface is not configured."]},
+        "expected": {"result": "skipped", "messages": ["Interface: Vxlan1 - Not configured"]},
     },
     {
         "name": "failure-wrong-interface",
