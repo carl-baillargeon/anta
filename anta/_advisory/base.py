@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from anta._advisory.models import AdvisoryMetadata
 from anta.models import AntaCommand, AntaTemplate, AntaTest
-from anta.result_manager.models import TestResultMetadata, TestResultMetadataEntry
+from anta.result_manager.models import TestResultMetadata
 
 if TYPE_CHECKING:
     from anta.device import AntaDevice
@@ -30,9 +30,7 @@ class AntaAdvisoryTest(AntaTest):
     ) -> None:
         """Initialize an advisory test and attach its metadata to the result."""
         super().__init__(device=device, inputs=inputs, eos_data=eos_data)
-        self.result.metadata = TestResultMetadata(
-            security_advisory=TestResultMetadataEntry[AdvisoryMetadata](data=self.advisory),
-        )
+        self.result.metadata = TestResultMetadata(security_advisory=self.advisory)
 
     def __init_subclass__(cls) -> None:
         """Set subclass identity and validate required advisory attributes."""
