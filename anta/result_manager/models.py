@@ -9,7 +9,7 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,23 +20,13 @@ if sys.version_info >= (3, 12):
 else:
     from typing_extensions import override
 
-MetadataT = TypeVar("MetadataT")
-
-
-class TestResultMetadataEntry(BaseModel, Generic[MetadataT]):
-    """Typed metadata entry attached to a test result."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    data: MetadataT
-
 
 class TestResultMetadata(BaseModel):
     """Optional typed metadata associated with a test result."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    security_advisory: TestResultMetadataEntry[AdvisoryMetadata] | None = None
+    security_advisory: AdvisoryMetadata | None = None
 
 
 class AntaTestStatus(str, Enum):

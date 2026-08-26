@@ -59,47 +59,45 @@ def test_advisory_result(device: AntaDevice) -> None:
     assert test_instance.result.custom_field == "Overridden custom field."
     assert test_instance.result.metadata is not None
     assert test_instance.result.metadata.security_advisory is not None
-    assert test_instance.result.metadata.security_advisory.data is ADVISORY
+    assert test_instance.result.metadata.security_advisory is ADVISORY
     dumped_result = test_instance.result.model_dump(mode="json", exclude_none=True)
     assert dumped_result["metadata"] == {
         "security_advisory": {
-            "data": {
-                "sa_number": "0001",
-                "title": "Test advisory",
-                "severity": "high",
-                "cves": [
-                    {
-                        "cve_id": "CVE-2026-0001",
-                        "severity": "medium",
-                        "cvss_scores": [
-                            {"version": "3.1", "score": 6.5, "vector": "CVSS:3.1/TEST"},
-                            {"version": "4.0", "score": 7.0, "vector": "CVSS:4.0/TEST"},
-                        ],
-                    }
-                ],
-                "url": "https://example.com/advisory",
-                "description": "Test advisory description.",
-                "resolutions": [
-                    {
-                        "name": "Upgrade",
-                        "details": "Upgrade to a fixed release.",
-                        "url": "https://example.com/resolution",
-                    }
-                ],
-                "mitigations": [
-                    {
-                        "name": "Workaround",
-                        "details": "Apply the temporary workaround.",
-                        "url": "https://example.com/mitigation",
-                    }
-                ],
-            }
+            "sa_number": "0001",
+            "title": "Test advisory",
+            "severity": "high",
+            "cves": [
+                {
+                    "cve_id": "CVE-2026-0001",
+                    "severity": "medium",
+                    "cvss_scores": [
+                        {"version": "3.1", "score": 6.5, "vector": "CVSS:3.1/TEST"},
+                        {"version": "4.0", "score": 7.0, "vector": "CVSS:4.0/TEST"},
+                    ],
+                }
+            ],
+            "url": "https://example.com/advisory",
+            "description": "Test advisory description.",
+            "resolutions": [
+                {
+                    "name": "Upgrade",
+                    "details": "Upgrade to a fixed release.",
+                    "url": "https://example.com/resolution",
+                }
+            ],
+            "mitigations": [
+                {
+                    "name": "Workaround",
+                    "details": "Apply the temporary workaround.",
+                    "url": "https://example.com/mitigation",
+                }
+            ],
         }
     }
     restored_result = AntaTestResult.model_validate(dumped_result)
     assert restored_result.metadata is not None
     assert restored_result.metadata.security_advisory is not None
-    assert restored_result.metadata.security_advisory.data == ADVISORY
+    assert restored_result.metadata.security_advisory == ADVISORY
 
 
 def test_non_advisory_result_has_no_metadata() -> None:
